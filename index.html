@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Suivi en direct · HIKE</title>
+<!-- Le lien contient le jeton de suivi : on ne l'envoie jamais aux autres sites (carte, librairie). -->
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  /* Police Archivo hébergée ici (licence OFL, polices/OFL.txt) : aucun appel à Google Fonts. */
+  @font-face { font-family: Archivo; font-weight: 400; src: url(polices/Archivo-Regular.ttf) format('truetype'); font-display: swap; }
+  @font-face { font-family: Archivo; font-weight: 800; src: url(polices/Archivo-ExtraBold.ttf) format('truetype'); font-display: swap; }
+  @font-face { font-family: Archivo; font-weight: 900; font-style: italic; src: url(polices/Archivo-BlackItalic.ttf) format('truetype'); font-display: swap; }
+  :root { --rouge:#E30613; --encre:#2E2E33; --gris:#6F6F76; --fond:#FAF8F6; --vert:#2E7D4F; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--fond); color: var(--encre); font-family: Archivo, system-ui, sans-serif; }
+  #carte { position: absolute; inset: 0; }
+  .haut { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 1000; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+  .logo { background: var(--rouge); color: #fff; font-weight: 900; font-style: italic; font-size: 22px; padding: 6px 14px; border-radius: 999px; }
+  .direct { background: #fff; border-radius: 999px; padding: 6px 12px; font-size: 13px; font-weight: 800; display: flex; align-items: center; gap: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  .point { width: 9px; height: 9px; border-radius: 50%; background: var(--rouge); animation: pulse 1.4s infinite; }
+  .fini .point { background: var(--gris); animation: none; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .bas { position: absolute; left: 12px; right: 12px; bottom: 16px; z-index: 1000; background: #fff; border-radius: 20px; padding: 16px 18px; box-shadow: 0 10px 30px rgba(40,25,25,.22); }
+  .bas h1 { margin: 0 0 4px; font-size: 20px; font-weight: 800; }
+  .bas p { margin: 2px 0; font-size: 14px; color: var(--gris); line-height: 1.4; }
+  .bas .urgence { margin-top: 10px; font-size: 13px; color: var(--encre); }
+  .bas a { color: var(--rouge); font-weight: 800; }
+  .rando { width: 26px; height: 26px; border-radius: 50%; background: var(--encre); border: 4px solid #fff; box-shadow: 0 0 0 8px rgba(227,6,19,.25); }
+</style>
+</head>
+<body>
+<div id="carte"></div>
+<div class="haut"><div class="logo">HIKE</div><div class="direct" id="etat"><span class="point"></span><span id="etatTexte">Chargement…</span></div></div>
+<div class="bas">
+  <h1 id="titre">Suivi en direct</h1>
+  <p id="detail">Recherche de la position…</p>
+  <p class="urgence">Sans nouvelles et inquiet ? Appelle d'abord cette personne, puis le <a href="tel:112">112</a> (ou le <a href="tel:196">196</a> en mer).</p>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+  const SUPABASE_URL = 'https://cnoywnzhuztapmzgzaep.supabase.co';
+  const CLE = 'sb_publishable_jDIHtJalatEQeQfcbctVDA_RkfOOva_';
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const carte = L.map('carte', { zoomControl: false, attributionControl: true }).setView([48.2, -3.0], 8);
+  L.tileLayer('https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
+    { maxZoom: 18, attribution: 'Plan IGN' }).addTo(carte);
+  let marqueur = null, cercle = null, premiere = true;
+
+  function ilYa(d) {
+    const m = Math.round((Date.now() - d.getTime()) / 60000);
+    if (m < 1) return "à l'instant";
+    if (m < 60) return `il y a ${m} min`;
+    const h = Math.floor(m / 60);
+    return `il y a ${h} h ${String(m % 60).padStart(2, '0')}`;
+  }
+
+  async function rafraichir() {
+    const etat = document.getElementById('etat');
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/suivi_en_direct`, {
+        method: 'POST',
+        headers: { 'apikey': CLE, 'Authorization': `Bearer ${CLE}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_token: token }),
+      });
+      const l = await r.json();
+      const s = Array.isArray(l) ? l[0] : null;
+      if (!s) {
+        document.getElementById('titre').textContent = 'Lien de suivi inconnu';
+        document.getElementById('detail').textContent = 'Vérifie le lien reçu par SMS.';
+        document.getElementById('etatTexte').textContent = 'Indisponible';
+        etat.classList.add('fini');
+        return;
+      }
+      const nom = s.pseudo || 'Le randonneur';
+      document.getElementById('titre').textContent = s.titre ? `${nom} · ${s.titre}` : nom;
+      if (!s.actif) {
+        document.getElementById('etatTexte').textContent = 'Partage terminé';
+        document.getElementById('detail').textContent = 'Le partage de position est terminé (rando finie ou partage arrêté).';
+        etat.classList.add('fini');
+        if (marqueur) { carte.removeLayer(marqueur); marqueur = null; }
+        if (cercle) { carte.removeLayer(cercle); cercle = null; }
+        return;
+      }
+      document.getElementById('etatTexte').textContent = 'En direct';
+      etat.classList.remove('fini');
+      if (s.lat == null) {
+        document.getElementById('detail').textContent = 'Partage activé, en attente de la première position.';
+        return;
+      }
+      const p = [s.lat, s.lon];
+      if (!marqueur) marqueur = L.marker(p, { icon: L.divIcon({ className: '', html: '<div class="rando"></div>', iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(carte);
+      else marqueur.setLatLng(p);
+      if (s.accuracy_m && s.accuracy_m > 20) {
+        if (!cercle) cercle = L.circle(p, { radius: s.accuracy_m, color: '#E30613', weight: 1, fillOpacity: .08 }).addTo(carte);
+        else cercle.setLatLng(p).setRadius(s.accuracy_m);
+      }
+      if (premiere) { carte.setView(p, 15); premiere = false; }
+      const maj = s.updated_at ? ilYa(new Date(s.updated_at)) : '';
+      const km = s.km != null ? ` · km ${String(Math.round(s.km * 10) / 10).replace('.', ',')}` : '';
+      document.getElementById('detail').textContent = `Dernière position ${maj}${km}. Mise à jour automatique.`;
+    } catch (e) {
+      document.getElementById('detail').textContent = 'Connexion impossible, nouvel essai dans 30 secondes.';
+    }
+  }
+  rafraichir();
+  setInterval(rafraichir, 30000);
+</script>
+</body>
+</html>
